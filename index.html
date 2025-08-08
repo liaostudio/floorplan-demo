@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>房屋格局圖創建器 · Pro+</title>
+    <style>
+      html,body { height:100%; margin:0; background:#f8fafc; }
+      #app { max-width: 1200px; margin: 24px auto; }
+      button { cursor:pointer; }
+      input[type="number"] { padding:4px 6px; border:1px solid #e5e7eb; border-radius:6px; }
+      .card { border:1px solid #e5e7eb; border-radius:12px; background:#fff; }
+    </style>
+    <!-- React 18 / ReactDOM 18 / Babel Standalone -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- jsPDF CDN -->
+    <script src="https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <script type="text/babel">
+      const { useEffect, useRef, useState } = React;
+      // ===== Utils =====
+      const m2px = (m, s) => m * s;
+      const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : "id-" + Math.random().toString(36).slice(2));
+
+      // ===== Render (shared) =====
+      function renderFloorDOM(floor, svg, opts){
+        const { scale=50, whiteBg=true, width=1200, height=800, interactive=false, selectedId=null, marquee=null, selectedIds=null } = opts||{};
+        if(!svg || !svg.namespaceURI) return;
+        const NS = svg.namespaceURI;
+        while(svg.firstChild) svg.removeChild(svg.firstChild);
+        if(whiteBg){ const bg=document.createElementNS(NS,"rect"); bg.setAttribute("x","0"); bg.setAttribute("y","0"); bg.setAttribute("width", String(width)); bg.setAttribute("height", String(height)); bg.setAttribute("fill","#fff"); svg.appendChild(bg); }
+        const rooms = Array.isArray(floor?.rooms)?floor.rooms:[];
+        const edges = Array.isArray(floor?.edges)?floor.edges:[];
+        const selectedSet = new Set(Array.isArray(selectedIds)?selectedIds:(selectedId?[selectedId]:[]));
+        for(const r of rooms){ if(!r) continue; const g=document.createElementNS(NS,"g"); g.setAttribute("data-type","room"); g.setAttribute("data-id", r.id); svg.appendChild(g);
+          const rr=document.createElementNS(NS,"rect"); rr.setAttribute("x", String(r.x??0)); rr.setAttribute("y", String(r.y??0)); rr.setAttribute("width", String(r.w??0)); rr.setAttribute("height", String(r.h??0)); rr.setAttribute("fill", r.fill||"#FDE68A"); rr.setAttribute("stroke", r.stroke||"#92400E"); rr.setAttribute("stroke-width","2"); g.appendChild(rr);
+          const t=Number(r.wallThickM||0); if(t>0){ const inr=document.createElementNS(NS,"rect"); const x=(r.x??0)+m2px(t,scale); const y=(r.y??0)+m2px(t,scale); const w=Math.max(0,(r.w??0)-m2px(t*2,scale)); const h=Math.max(0,(r.h??0)-m2px(t*2,scale)); inr.setAttribute("x",String(x)); inr.setAttribute("y",String(y)); inr.setAttribute("width",String(w)); inr.setAttribute("height",String(h)); inr.setAttribute("fill","#fff"); inr.setAttribute("stroke","#D1D5DB"); inr.setAttribute("stroke-dasharray","4 4"); g.appendChild(inr);} 
+          if(interactive && selectedSet.has(r.id)){ const sel=document.createElementNS(NS,"rect"); sel.setAttribute("x", String(r.x)); sel.setAttribute("y", String(r.y)); sel.setAttribute("width", String(r.w)); sel.setAttribute("height", String(r.h)); sel.setAttribute("fill","none"); sel.setAttribute("stroke","#2563EB"); sel.setAttribute("stroke-width","2"); g.appendChild(sel);
+            const mk=(hx,hy,name)=>{ const h=document.createElementNS(NS,"rect"); h.setAttribute("x", String(hx-6)); h.setAttribute("y", String(hy-6)); h.setAttribute("width","12"); h.setAttribute("height","12"); h.setAttribute("fill","#fff"); h.setAttribute("stroke","#2563EB"); h.setAttribute("data-type","room-handle"); h.setAttribute("data-id", r.id); h.setAttribute("data-handle", name); g.appendChild(h); };
+            mk(r.x, r.y, "tl"); mk(r.x+r.w, r.y, "tr"); mk(r.x, r.y+r.h, "bl"); mk(r.x+r.w, r.y+r.h, "br");
+          }
+        }
+        for(const e of edges){ if(!e) continue; const g=document.createElementNS(NS,"g"); g.setAttribute("data-type","edge"); g.setAttribute("data-id", e.id); svg.appendChild(g);
+          const x=Number(e.x??e.x1??0), y=Number(e.y??e.y1??0), len=Number(e.lenPx??0);
+          const ln=document.createElementNS(NS,"line"); ln.setAttribute("x1", String(x)); ln.setAttribute("y1", String(y)); ln.setAttribute("x2", String(e.x2??(x+len))); ln.setAttribute("y2", String(e.y2??y)); ln.setAttribute("stroke", e.stroke||"#111827"); ln.setAttribute("stroke-width", String(e.width||2)); ln.setAttribute("stroke-linecap","round"); g.appendChild(ln);
+          if(interactive && selectedSet.has(e.id)){ const knob=document.createElementNS(NS,"circle"); knob.setAttribute("cx", String((e.x2??(x+len)))); knob.setAttribute("cy", String(y)); knob.setAttribute("r","7"); knob.setAttribute("fill","#fff"); knob.setAttribute("stroke","#2563EB"); knob.setAttribute("data-type","edge-handle"); knob.setAttribute("data-id", e.id); knob.setAttribute("data-side","end"); g.appendChild(knob); }
+        }
+        if(interactive && marquee){
+          const g=document.createElementNS(NS,"g");
+          const {x1,y1,x2,y2}=marquee; const x=Math.min(x1,x2), y=Math.min(y1,y2), w=Math.abs(x2-x1), h=Math.abs(y2-y1);
+          const r=document.createElementNS(NS,"rect"); r.setAttribute("x",x); r.setAttribute("y",y); r.setAttribute("width",w); r.setAttribute("height",h);
+          r.setAttribute("fill","rgba(37,99,235,0.08)"); r.setAttribute("stroke","#2563EB"); r.setAttribute("stroke-dasharray","6 4"); g.appendChild(r); svg.appendChild(g);
+        }
+      }
+
+      async function svgToPNGDataURL(width, height, draw){
+        const NS = "http://www.w3.org/2000/svg"; const svg=document.createElementNS(NS,"svg");
+        svg.setAttribute("xmlns","http://www.w3.org/2000/svg"); svg.setAttribute("width", String(width)); svg.setAttribute("height", String(height));
+        draw(svg);
+        const xml=new XMLSerializer().serializeToString(svg);
+        const blob=new Blob([xml],{type:"image/svg+xml;charset=utf-8"}); const url=URL.createObjectURL(blob);
+        const img=await new Promise(res=>{ const im=new Image(); im.onload=()=>res(im); im.src=url; });
+        const c=document.createElement("canvas"); c.width=width; c.height=height; const ctx=c.getContext("2d");
+        ctx.fillStyle="#fff"; ctx.fillRect(0,0,width,height); ctx.drawImage(img,0,0);
+        URL.revokeObjectURL(url); return c.toDataURL("image/png",1);
+      }
+
+      const defRoom = (x,y,w,h)=>({ id:uid(), x,y,w,h, name:"房間", fill:"#FDE68A", stroke:"#92400E", wallThickM:0.12 });
+      const defEdge = (x,y,lenPx,color)=>({ id:uid(), x,y,lenPx, stroke:color||"#111827", width:2 });
+
+      function App(){
+        const [scale,setScale] = useState(50);
+        const [whiteBg,setWhiteBg] = useState(true);
+        const [canvasSize,setCanvasSize] = useState({ w: 1200, h: 800 });
+        const [floors,setFloors] = useState([{ id:uid(), name:"1F", rooms:[defRoom(60,60,260,160)], edges:[defEdge(80,240,100,"#10B981")] }]);
+        const [cur,setCur] = useState(0);
+        const [selectedIds,setSelectedIds] = useState([]);
+        const [marquee,setMarquee] = useState(null);
+        const svgRef = useRef(null);
+        const dragRef = useRef(null);
+
+        const sanitize = (f)=>({ ...f, rooms:Array.isArray(f?.rooms)?f.rooms:[], edges:Array.isArray(f?.edges)?f.edges:[] });
+
+        useEffect(()=>{ const svg=svgRef.current; if(!svg) return;
+          renderFloorDOM(floors[cur], svg, { scale, whiteBg, width:canvasSize.w, height:canvasSize.h, interactive:true, selectedIds, marquee });
+          attachInteractivity(svg);
+        },[floors,cur,scale,whiteBg,canvasSize,selectedIds,marquee]);
+
+        async function exportPNG(){
+          const floor = sanitize(floors[cur]||{});
+          const url = await svgToPNGDataURL(canvasSize.w, canvasSize.h, (svg)=>renderFloorDOM(floor, svg, { scale, whiteBg, width:canvasSize.w, height:canvasSize.h }));
+          const a=document.createElement("a"); a.href=url; a.download=`${floor.name||`L${cur+1}`}_floorplan.png`; a.click();
+        }
+
+        async function exportPDF(mode){
+          const jsPDF = window.jspdf && window.jspdf.jsPDF;
+          if(!jsPDF){ alert("需要 jsPDF 才能匯出 PDF"); return; }
+          const isAll = mode==="all"; const [wmm,hmm] = isAll ? [420,297] : [210,297];
+          const pdf=new jsPDF({ unit:"mm", format:[wmm,hmm], orientation:isAll?"landscape":"portrait" }); const margin=10;
+          if(isAll){
+            const cols=Math.min(3,Math.max(2,Math.ceil(floors.length/2))), rows=Math.ceil(floors.length/cols), cellW=(wmm-margin*2)/cols, cellH=(hmm-margin*2)/rows;
+            const urls = await Promise.all(floors.map((f)=> svgToPNGDataURL(canvasSize.w, canvasSize.h, (svg)=>renderFloorDOM(sanitize(f), svg, { scale, whiteBg, width:canvasSize.w, height:canvasSize.h }))));
+            urls.forEach((u,i)=>{ const r=Math.floor(i/cols), c=i%cols, x=margin+c*cellW, y=margin+r*cellH, pad=2;
+              pdf.setDrawColor(200); pdf.rect(x,y,cellW,cellH);
+              const imgW=cellW-pad*2, imgH=imgW*(canvasSize.h/canvasSize.w), imgY=y+(cellH-imgH)/2;
+              pdf.addImage(u,"PNG",x+pad,Math.max(y+pad,imgY),imgW,imgH); pdf.setFontSize(12); pdf.text(floors[i].name||`L${i+1}`,x+cellW-pad,y+cellH-4,{align:"right"}); });
+            pdf.save(`all-floors_${Date.now()}.pdf`);
+          } else {
+            const floor = sanitize(floors[cur]||{});
+            const url = await svgToPNGDataURL(canvasSize.w, canvasSize.h, (svg)=>renderFloorDOM(floor, svg, { scale, whiteBg, width:canvasSize.w, height:canvasSize.h }));
+            const imgW=wmm-margin*2, imgH=imgW*(canvasSize.h/canvasSize.w), y=(hmm-imgH)/2; pdf.addImage(url,"PNG",margin,Math.max(margin,y),imgW,imgH); pdf.save(`${floor.name||`L${cur+1}`}_${Date.now()}.pdf`);
+          }
+        }
+
+        function attachInteractivity(svg){
+          svg.onmousedown = onDown;
+        }
+        function svgPointFromClient(e){
+          const svg = svgRef.current; const pt = svg.createSVGPoint(); pt.x=e.clientX; pt.y=e.clientY; const m=svg.getScreenCTM(); return m?pt.matrixTransform(m.inverse()):{x:e.clientX,y:e.clientY};
+        }
+        const commit = (mut) => setFloors(fs=>mut(Array.isArray(fs)?fs:[]));
+
+        function onDown(e){
+          const t=e.target; const type=t.getAttribute?.("data-type"); const id=t.getAttribute?.("data-id");
+          const p = svgPointFromClient(e); const isDup = !!(e.ctrlKey||e.metaKey);
+          if(type){
+            setSelectedIds(prev=> e.shiftKey? (prev.includes(id)? prev.filter(x=>x!==id):[...prev,id]) : [id]);
+          } else {
+            // start marquee
+            setSelectedIds([]);
+            setMarquee({x1:p.x,y1:p.y,x2:p.x,y2:p.y});
+            const move=(ev)=>{ const q=svgPointFromClient(ev); setMarquee(m=>m?{...m,x2:q.x,y2:q.y}:m); };
+            const up=(ev)=>{ window.removeEventListener("mousemove",move); window.removeEventListener("mouseup",up);
+              const q=svgPointFromClient(ev); const f = sanitize(floors[cur]||{});
+              const box={ x:Math.min(q.x,marquee.x1), y:Math.min(q.y,marquee.y1), w:Math.abs(q.x-marquee.x1), h:Math.abs(q.y-marquee.y1) };
+              const hits=[];
+              (f.rooms||[]).forEach(r=>{ const hit = !(r.x>box.x+box.w || r.x+r.w<box.x || r.y>box.y+box.h || r.y+r.h<box.y); if(hit) hits.push(r.id); });
+              (f.edges||[]).forEach(ed=>{ const x=ed.x??0, y=ed.y??0, x2=(ed.x2??(x+(ed.lenPx??0))), y2=(ed.y2??y);
+                const in1=(x>=box.x && x<=box.x+box.w && y>=box.y && y<=box.y+box.h);
+                const in2=(x2>=box.x && x2<=box.x+box.w && y2>=box.y && y2<=box.y+box.h);
+                if(in1||in2) hits.push(ed.id);
+              });
+              setSelectedIds(hits); setMarquee(null);
+            };
+            window.addEventListener("mousemove",move); window.addEventListener("mouseup",up);
+            return;
+          }
+
+          const floor = sanitize(floors[cur]||{});
+          // Rooms group drag / duplicate
+          if(type==="room"){
+            const sel = (selectedIds.length? selectedIds : [id]);
+            const origins = floor.rooms.filter(r=>sel.includes(r.id)).map(r=>({...r}));
+            let workIds = sel.slice();
+            if(isDup){
+              commit(fs=>fs.map((f,i)=>{ if(i!==cur) return f; const fr=sanitize(f); const clones=origins.map(r=>({...r,id:uid(),x:(r.x||0)+16,y:(r.y||0)+16})); return {...fr, rooms:[...fr.rooms,...clones]}; }));
+              const fr = sanitize((floors[cur]||{}));
+              workIds = fr.rooms.slice(-origins.length).map(r=>r.id);
+              setSelectedIds(workIds);
+            }
+            dragRef.current={kind:"rooms-group", ids:workIds, startP:p, orig:origins, shift:e.shiftKey, alt:e.altKey};
+            window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp); e.preventDefault(); return;
+          }
+          if(type==="room-handle"){
+            const r=floor.rooms.find(x=>x.id===id); if(!r) return;
+            dragRef.current={kind:"room-handle", id:r.id, handle:t.getAttribute("data-handle"), startP:p, orig:{...r}, shift:e.shiftKey, alt:e.altKey};
+            window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp); e.preventDefault(); return;
+          }
+          if(type==="edge"){
+            let ed=floor.edges.find(x=>x.id===id); if(!ed) return;
+            if(isDup){
+              commit(fs=>fs.map((f,i)=> i===cur?{...f, edges:[...sanitize(f).edges, {...ed, id:uid(), x:(ed.x||0)+16, y:(ed.y||0)+16}]}:f));
+            }
+            dragRef.current={kind:"edge", id:ed.id, startP:p, orig:{...ed}, shift:e.shiftKey}; window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp); e.preventDefault(); return;
+          }
+          if(type==="edge-handle"){
+            const ed=floor.edges.find(x=>x.id===id); if(!ed) return;
+            dragRef.current={kind:"edge-handle", id:ed.id, startP:p, orig:{...ed}, shift:e.shiftKey}; window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp); e.preventDefault(); return;
+          }
+        }
+
+        function onMove(e){
+          const d=dragRef.current; if(!d) return;
+          const svg = svgRef.current; const pt=svg.createSVGPoint(); pt.x=e.clientX; pt.y=e.clientY; const m=svg.getScreenCTM(); const p=m?pt.matrixTransform(m.inverse()):{x:e.clientX,y:e.clientY};
+          const dx=p.x-d.startP.x, dy=p.y-d.startP.y; const snap = (n)=> d.shift? Math.round(n/10)*10 : n;
+
+          setFloors(fs=>fs.map((f,i)=>{ if(i!==cur) return f; const fr=sanitize(f);
+            if(d.kind==="rooms-group"){ d.ids.forEach((rid,idx)=>{ const r=fr.rooms.find(x=>x.id===rid); if(!r) return; const o=d.orig[idx]; r.x = snap(o.x + dx); r.y = snap(o.y + dy); }); return {...fr}; }
+            if(d.kind==="room-handle"){ const r=fr.rooms.find(x=>x.id===d.id); if(!r) return f; let x=d.orig.x, y=d.orig.y, w=d.orig.w, h=d.orig.h; const cx=x+w/2, cy=y+h/2; if(d.handle.includes("t")){ const ny=snap(d.orig.y+dy); h=d.orig.h+(y-ny); y=ny; } if(d.handle.includes("b")){ h=snap(d.orig.h+dy); } if(d.handle.includes("l")){ const nx=snap(d.orig.x+dx); w=d.orig.w+(x-nx); x=nx; } if(d.handle.includes("r")){ w=snap(d.orig.w+dx); } w=Math.max(20,w); h=Math.max(20,h); if(d.alt){ x=cx-w/2; y=cy-h/2; } r.x=x; r.y=y; r.w=w; r.h=h; return {...fr}; }
+            if(d.kind==="edge"){ const ed=fr.edges.find(x=>x.id===d.id); if(!ed) return f; ed.x=snap(d.orig.x+dx); ed.y=snap(d.orig.y+dy); if(typeof ed.x2==="number"){ const len=(d.orig.x2-d.orig.x); ed.x2=ed.x+len; } ed.y2=ed.y; return {...fr}; }
+            if(d.kind==="edge-handle"){ const ed=fr.edges.find(x=>x.id===d.id); if(!ed) return f; const newLen = snap(Math.max(10,(d.orig.lenPx ?? (d.orig.x2 - d.orig.x) ?? 0) + dx)); ed.lenPx=newLen; ed.x2=ed.x+newLen; ed.y2=ed.y; return {...fr}; }
+            return f;
+          }));
+        }
+        function onUp(){ window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); dragRef.current=null; }
+
+        useEffect(()=>{ const onKey=(e)=>{ 
+          if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="z"){ e.preventDefault(); /* simple, no stack here in web demo */ return; }
+          if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="y"){ e.preventDefault(); return; }
+          if(e.key==="Delete" || e.key==="Backspace"){
+            setFloors(fs=>fs.map((f,i)=>{ if(i!==cur) return f; const fr=sanitize(f); const rooms=fr.rooms.filter(r=>!selectedIds.includes(r.id)); const edges=fr.edges.filter(ed=>!selectedIds.includes(ed.id)); return {...fr, rooms, edges}; }));
+            setSelectedIds([]);
+          }
+        }; window.addEventListener("keydown", onKey); return ()=>window.removeEventListener("keydown", onKey); },[cur, selectedIds]);
+
+        const addRoom = ()=> setFloors(fs=>fs.map((f,i)=> i===cur?{...f, rooms:[...sanitize(f).rooms, defRoom(80,80,200,140)]}:f));
+        const addEdge = ()=> setFloors(fs=>fs.map((f,i)=> i===cur?{...f, edges:[...sanitize(f).edges, defEdge(100, 100+Math.random()*300|0, 120, "#60A5FA")]}:f));
+        const addFloor= ()=> setFloors(fs=>[...fs, { id:uid(), name:`${fs.length+1}F`, rooms:[], edges:[] }]);
+        const delFloor= ()=> setFloors(fs=> fs.length>1 ? (setCur(Math.max(0,cur-1)), fs.filter((_,i)=>i!==cur)) : fs);
+
+        return (
+          <div style={{ fontFamily:"ui-sans-serif,system-ui", padding:12, display:"grid", gridTemplateRows:"auto auto 1fr auto", gap:12 }}>
+            <header style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <b>房屋格局圖創建器 · Pro+（Web 版）</b>
+              <span style={{marginLeft:"auto"}} />
+              <label style={{display:"inline-flex",alignItems:"center",gap:6}}>
+                <span>白底</span>
+                <input type="checkbox" checked={whiteBg} onChange={e=>setWhiteBg(e.target.checked)} />
+              </label>
+              <label style={{display:"inline-flex",alignItems:"center",gap:6}}>
+                <span>比例(px/m)</span>
+                <input type="number" value={scale} onChange={e=>setScale(parseInt(e.target.value||"50",10))} style={{width:80}}/>
+              </label>
+              <button onClick={addRoom}>+ 房間</button>
+              <button onClick={addEdge}>+ 線段（門/窗）</button>
+              <button onClick={exportPNG}>匯出 PNG（當前）</button>
+              <button onClick={()=>exportPDF("current")}>PDF 當前樓層 A4</button>
+              <button onClick={()=>exportPDF("all")}>PDF 全部縮圖 A3</button>
+            </header>
+
+            <nav style={{display:"flex",gap:8,alignItems:"center"}}>
+              {floors.map((f,i)=> (
+                <button key={f.id} onClick={()=>{setCur(i); setSelectedIds([]);}} style={{padding:"6px 10px", borderRadius:10, border:"1px solid #e5e7eb", background:i===cur?"#111827":"#fff", color:i===cur?"#fff":"#111827"}}>
+                  {f.name||`L${i+1}`}
+                </button>
+              ))}
+              <button onClick={addFloor}>+ 新增樓層</button>
+              {floors.length>1 && <button onClick={delFloor}>刪除當前樓層</button>}
+              <label style={{marginLeft:"auto",display:"inline-flex",gap:6,alignItems:"center"}}>
+                <span>畫布 W×H</span>
+                <input type="number" value={canvasSize.w} onChange={e=>setCanvasSize(s=>({...s,w:parseInt(e.target.value||"1200",10)}))} style={{width:90}}/>
+                <input type="number" value={canvasSize.h} onChange={e=>setCanvasSize(s=>({...s,h:parseInt(e.target.value||"800",10)}))} style={{width:90}}/>
+              </label>
+            </nav>
+
+            <section style={{display:"grid",gridTemplateColumns:"1fr 260px",gap:12}}>
+              <div className="card" style={{overflow:"auto"}}>
+                <svg ref={svgRef} width={canvasSize.w} height={canvasSize.h} style={{cursor: dragRef.current?"grabbing":"default"}} />
+              </div>
+              <aside className="card" style={{padding:12}}>
+                <b>屬性</b>
+                {selectedIds.length===0 && <div style={{color:"#6b7280",fontSize:12,marginTop:8}}>未選取</div>}
+                {selectedIds.length>1 && <div style={{color:"#6b7280",fontSize:12,marginTop:8}}>已選 {selectedIds.length} 個</div>}
+                {selectedIds.length===1 && (()=> {
+                  const f = sanitize(floors[cur]||{}); const id=selectedIds[0];
+                  const r=f.rooms.find(x=>x.id===id); const e=f.edges.find(x=>x.id===id);
+                  if(r){
+                    const upd=(k,v)=>setFloors(fs=>fs.map((ff,i)=> i!==cur?ff:{...ff, rooms: (ff.rooms||[]).map(x=> x.id===id?{...x,[k]:v}:x)}));
+                    return (<div style={{display:"grid",gap:8,marginTop:8}}>
+                      <label>X <input type="number" value={r.x} onChange={ev=>upd("x", +ev.target.value||0)}/></label>
+                      <label>Y <input type="number" value={r.y} onChange={ev=>upd("y", +ev.target.value||0)}/></label>
+                      <label>寬 <input type="number" value={r.w} onChange={ev=>upd("w", Math.max(20,+ev.target.value||20))}/></label>
+                      <label>高 <input type="number" value={r.h} onChange={ev=>upd("h", Math.max(20,+ev.target.value||20))}/></label>
+                      <label>牆厚(m) <input step="0.01" type="number" value={r.wallThickM||0} onChange={ev=>upd("wallThickM", Math.max(0,+ev.target.value||0))}/></label>
+                    </div>);
+                  }
+                  if(e){
+                    const upd=(k,v)=>setFloors(fs=>fs.map((ff,i)=> i!==cur?ff:{...ff, edges: (ff.edges||[]).map(x=> x.id===id?{...x,[k]:v, ...(k==='lenPx'?{x2:(x.x??0)+v,y2:x.y}:{} ) }:x)}));
+                    return (<div style={{display:"grid",gap:8,marginTop:8}}>
+                      <label>X <input type="number" value={e.x||0} onChange={ev=>upd("x", +ev.target.value||0)}/></label>
+                      <label>Y <input type="number" value={e.y||0} onChange={ev=>upd("y", +ev.target.value||0)}/></label>
+                      <label>長度 <input type="number" value={e.lenPx||Math.max(10,(e.x2??(e.x||0))-(e.x||0))} onChange={ev=>upd("lenPx", Math.max(10,+ev.target.value||10))}/></label>
+                    </div>);
+                  }
+                  return null;
+                })()}
+              </aside>
+            </section>
+
+            <footer style={{color:"#6b7280",fontSize:12,display:"flex",justifyContent:"space-between"}}>
+              <span>規則：水平線段；牆厚>0 畫內框；白底可開關；拖拉/縮放、Ctrl/⌘+拖複製、Delete 刪除、Shift 多選/框選。</span>
+              <span>© Pro+ Minimal</span>
+            </footer>
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById('app')).render(<App/>);
+    </script>
+  </body>
+</html>
